@@ -1,0 +1,379 @@
+---
+title: "Prudential Life Insurance Assessment"
+author: "Rahul Bagga"
+date: "10/6/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+```{r}
+library(nnet)
+library(rattle)
+library(rpart)
+library(MASS)
+library(stargazer)
+library(DT)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+```
+
+#Read and check the train and test data
+```{r}
+train<-read.csv("~/Desktop/Programming for analytics/week 6/Prudential/train.csv")
+test<-read.csv("~/Desktop/Programming for analytics/week 6/Prudential/test.csv")
+head(train)
+head(test)
+str (train)
+str(test)
+var_kind<-c("Product_Info_", "Ins_Age", "Ht", "Wt","BMI","Employment_Info_","InsuredInfo_",
+                "Insurance_History_", "Family_Hist_","Medical_History_", "Medical_Keyword_")
+```
+
+#Data cleaning 
+Removing variables with excess NAs in both test and train making a function with minimum threshold
+on train and test data 
+As a preliminary step in data treatment, variables that have a high percentage of missing values are removed. While the threshold for removal is user determined, for this exercise the threshold was 30%.
+
+```{r}
+sapply(train, function(x) sum(is.na(x)) )
+sapply(test, function(x) sum(is.na(x)) )
+
+rmNAvars<-function(dat,threshold){
+      dat<-dat[, -which(colMeans(is.na(dat)) > threshold)]
+    }
+    train_clean<-rmNAvars(train,0.3)
+    test_clean<-test[,intersect(colnames(test), colnames(train_clean))]
+
+
+```
+Replacing/Imputing Missing values with Median as Median is not sensitive to outliers
+For the variables that are not dropped at the previous step of modeling, variables that have missing values in lesser percentages are imputed. The methodology used for imputation is using median of the remaining data series. This is a commonly used industry practice and is efficient as the missing data for all variables is randomly distributed over the response variable.
+
+```{r}
+manage_na <- function(datafra)
+    {
+      for(i in 1:ncol(datafra))
+      {
+        if(is.numeric(datafra[,i]))
+        {
+          datafra[is.na(datafra[,i]),i] <- median(datafra[!is.na(datafra[,i]),i])
+        }
+      }
+      datafra
+    }
+    train_clean <- manage_na(train_clean)
+    test_clean <- manage_na(test)
+    train_conti<-train_clean[,c("Product_Info_4", "Ins_Age", "Ht", "Wt", "BMI",
+                                "Employment_Info_1", "Employment_Info_4", "Employment_Info_6")]
+    
+    train_clean[, !(sapply(train_clean, class) == "numeric" | sapply(train_clean, class) == 
+                      "integer")]<-
+      as.numeric(train_clean[, !(sapply(train_clean, class) == "numeric" | 
+                                   sapply(train_clean, class) == "integer")])
+    
+    test_clean[, !(sapply(test_clean, class) == "numeric" | sapply(test_clean, class) == 
+                      "integer")]<-
+      as.numeric(test_clean[, !(sapply(test_clean, class) == "numeric" | 
+                                   sapply(test_clean, class) == "integer")])
+   
+    
+```
+
+#Exploratory Data Analysis
+Dividing data into Continuous, categorical and Dummy variables
+```{r}
+temp1<- data.frame(Variable_Type = c(
+"Product Information",
+"Insurance Age",
+"Height",
+"Weight", 
+"BMI",
+"Employment Information",
+"Insured Information",
+"Insurance History",
+"Family History",
+"Medical History",
+"Medical Keyword"))
+
+temp1$Continous<-c(1,1,1,1,1,3,0,1,4,0,0)
+temp1$Categorical<-c(6,0,0,0,0,3,7,8,1,41,0)
+temp1$Dummy<-c(0,0,0,0,0,0,0,0,0,0,48)
+temp1$Total<-rowSums(temp1[,-1])
+temp1[12,2:5]<-colSums(temp1[,-1])
+temp1$Variable_Type[12]<-"Total"
+datatable(temp1, options = list(pageLength = 13,
+  initComplete = JS(
+    "function(settings, json) {",
+    "$(this.api().table().header()).css({'background-color': '#000', 'color': '#fff'});",
+    "}")))
+```
+
+Continuous variables are analyzed using summary statistics, box plots and density plots. The categorical variables are analyzed using event rate chart to track the variation to the response.
+
+#Histogram of Response Plot
+The response is a ordinal variable with levels from 1 to 8 and associates to the risk level of a customer
+
+```{r}
+library(ggplot2)
+library(plotly)
+p<-ggplot(train, aes(x=Response))+geom_histogram(fill="Red", alpha=0.3)
+ggplotly(p, color=~Response, width = 800, height = 400)%>%
+layout(title="Distribution of Response Variable", plot_bgcolor= "white", xaxis=list(gridcolor="lightgrey", opacity=0.5), yaxis=list(gridcolor="lightgrey",opacity = 0.5),autosize = F, width = 800, height = 400)
+```
+While it is not mentioned whether the scale is in increasing order of riskiness or otherwise, from the distribution of the response variable we can infer that 8 could possibly refer to the customer which are at high risk to likely take insurance while 1 can be people with low risk to take. insurance.
+
+#Summary Statistics
+
+To allow for easier convergence of machine learning algorithms variables are normalized to the range of [0, 1]. The most common normalizing function used is given below:
+
+X=xi−xmin/xmax−xmin
+
+The same function had been applied to the continuous variables in the input data-set. The summary statistics help understand the distribution of the underlying dataset, the box plots and density plots enable visualizing the data-set   
+```{r}
+## Generating Summary Table
+
+summ_conti<-data.frame(Variables =  colnames(train_conti))
+summ_conti$Min<-apply(train_conti,2,function(x){min(x, na.rm = T)})
+summ_conti$Max<-apply(train_conti,2,function(x){max(x, na.rm = T)})
+summ_conti$Mean<-apply(train_conti,2,function(x){mean(x, na.rm = T)})
+summ_conti$Median<-apply(train_conti,2,function(x){median(x, na.rm = T)})
+datatable(summ_conti, options = list(initComplete = JS(
+    "function(settings, json) {",
+    "$(this.api().table().header()).css({'background-color': '#000', 'color': '#fff'});",
+    "}")))
+```
+
+#Continuous Variable Analysis
+The box plots enable visualization of the data-set especially in relation to outliers. However considering the large number of data
+
+#Boxplot
+```{r}
+library(ggplot2)
+library(plotly)
+library(gridExtra)
+library(grid)
+train_cont <- data.frame(train_conti, Response=train_clean$Response)
+doPlots <- function(data.in, fun, ii, ncol=3) {
+  pp <- list()
+  for (i in ii) {
+    p <- fun(data.in=data.in, i=i)
+    pp <- c(pp, list(p))
+  }
+  do.call("grid.arrange", c(pp, ncol=ncol))
+}
+
+plotBox <- function(data.in, i) {
+  data <- data.frame(y=data.in[,i], Response=data.in$Response)
+  
+ p <- ggplot(data, aes(x=factor(Response), y=y)) + geom_boxplot() + ylab(colnames(data.in)[i]) + theme_light()
+  return (p)
+}
+
+doPlots(data.in=train_cont, fun=plotBox, ii=1:8,ncol=3)
+
+```
+The box plots enable visualization of the data-set especially in relation to outliers as well as Response variable. We can see BMI and Employment_Info_6 show variation with respect to Respinse variable so we can keep them and eliminate all other continuous variables.
+```{r}
+train_clean<- subset(train_clean, select = -c(Product_Info_4, Ins_Age, Ht, Wt, Employment_Info_1, Employment_Info_4) )
+test_clean<- subset(test_clean, select = -c(Product_Info_4, Ins_Age, Ht, Wt, Employment_Info_1, Employment_Info_4) )
+
+```
+
+#Density Plot
+The density plots help visualize the characteristics of the distribution including statistical metrics such as mean, standard deviation and kurtosis. It also enables us to visually identify if any relationship exists with the response variable. For example: The density plot of variable Employment_Info_6 is similar to the histogram of the response variable, this probably indicated that this variable could be a good predictor of the response variable
+
+```{r}
+library(reshape)
+temp_melt<-melt(train_conti[,1:2])
+
+   p1<-ggplot(temp_melt,aes(value, fill = variable ))+geom_density(alpha = 0.5)+ggtitle("Density Plots")
+    ggplotly(p1, height= 800, width = 1000)%>%
+      layout(plot_bgcolor="transparent",paper_bgcolor= "transparent",autosize = F, width = 1000, height = 800)
+      temp_melt<-melt(train_conti[,c(3,4,5)])
+ 
+    p2<-ggplot(temp_melt,aes(value, fill = variable ))+geom_density(alpha = 0.5)+ggtitle("Density Plots")
+    ggplotly(p2, height= 800, width = 1000)%>%
+      layout(plot_bgcolor="transparent",paper_bgcolor= "transparent",autosize = F, width = 1000, height = 800)
+    temp_melt<-melt(train_conti[,c(6,8)])
+    p3<-ggplot(temp_melt,aes(value, fill = variable ))+geom_density(alpha = 0.5)+ggtitle("Density Plots")
+    ggplotly(p3, height= 800, width = 1000)%>%
+      layout(plot_bgcolor="transparent",paper_bgcolor= "transparent",autosize = F, width = 1000, height = 800)
+    temp_melt<-melt(train_conti[,7])
+    temp_melt$variable<-"Employment_Info_4"
+    p4<-ggplot(temp_melt,aes(value, fill = variable ))+geom_density(alpha = 0.5)+ggtitle("Density Plots")
+    ggplotly(p4, height= 800, width = 1000)%>%
+      layout(plot_bgcolor="transparent",paper_bgcolor= "transparent",autosize = F, width = 1000, height = 800)
+```
+
+#Event Rate Chart
+In an attempt to capture the conditional probability of the response given a specific bin of the categorical variable
+$$
+P(y=1|ProdInfo_2= A_1)=\frac{P(y=1  \cap  ProdInfo_2= A_1  )}{P(ProdInfo_2= A_1)}
+$$
+1. Product Information
+```{r echo=TRUE, warning=FALSE,message=FALSE,error=FALSE,fig.keep='all'}
+
+train_categ<-train_clean[,-which(colnames(train_clean) %in% colnames(train_conti))]
+    i="Product_Info"
+    train_temp<-train_categ[,grep(i,colnames(train_categ))]
+    index<-1
+    plt<-htmltools::tagList()
+    for (i in colnames(train_temp)){
+      data_freq<-as.data.frame(table(train_temp[,i],train_clean$Response)/(as.data.frame(table(train_temp[,i]))[,2]))
+      p<-plot_ly(data_freq, x = ~Var1, y = ~Freq, color = ~Var2, type="bar")%>%
+        layout(title = paste0("Event Rate Chart- ",gsub("_"," ",i)),
+               xaxis = list(title = gsub("_"," ",i),showgrid = T))
+      plt[[index]] <- as_widget(p)
+      index <- index + 1
+    }
+    plt
+```
+
+2.Employment Information 
+```{r echo=TRUE, warning=FALSE,message=FALSE,error=FALSE,fig.keep='all'}
+i="Employment_Info"
+    train_temp<-train_categ[,grep(i,colnames(train_categ))]
+    index<-1
+    plt<-htmltools::tagList()
+    for (i in colnames(train_temp)){
+      data_freq<-as.data.frame(table(train_temp[,i],train_clean$Response)/(as.data.frame(table(train_temp[,i]))[,2]))
+      p<-plot_ly(data_freq, x = ~Var1, y = ~Freq, color = ~Var2, type="bar")%>%
+        layout(title = paste0("Event Rate Chart- ",gsub("_"," ",i)),
+               xaxis = list(title = gsub("_"," ",i),showgrid = T))
+      plt[[index]] <- as_widget(p)
+      index <- index + 1
+    }
+    plt
+```
+
+3. Insured Information
+```{r echo=TRUE, warning=FALSE,message=FALSE,error=FALSE,fig.keep='all'}
+i="InsuredInfo"
+    train_temp<-train_categ[,grep(i,colnames(train_categ))]
+    index<-1
+    plt<-htmltools::tagList()
+    for (i in colnames(train_temp)){
+      data_freq<-as.data.frame(table(train_temp[,i],train_clean$Response)/(as.data.frame(table(train_temp[,i]))[,2]))
+      p<-plot_ly(data_freq, x = ~Var1, y = ~Freq, color = ~Var2, type="bar")%>%
+        layout(title = paste0("Event Rate Chart- ",gsub("_"," ",i)),
+               xaxis = list(title = gsub("_"," ",i),showgrid = T))
+      plt[[index]] <- as_widget(p)
+      index <- index + 1
+    }
+    plt
+```
+
+4.Insurance History
+```{r}
+i="Insurance_History"
+    train_temp<-train_categ[,grep(i,colnames(train_categ))]
+    index<-1
+    plt<-htmltools::tagList()
+    for (i in colnames(train_temp)){
+      data_freq<-as.data.frame(table(train_temp[,i],train_clean$Response)/(as.data.frame(table(train_temp[,i]))[,2]))
+      p<-plot_ly(data_freq, x = ~Var1, y = ~Freq, color = ~Var2, type="bar")%>%
+        layout(title = paste0("Event Rate Chart- ",gsub("_"," ",i)),
+               xaxis = list(title = gsub("_"," ",i),showgrid = T))
+      plt[[index]] <- as_widget(p)
+      index <- index + 1
+    }
+    plt
+```
+
+5.Medical History
+```{r echo=TRUE, warning=FALSE,message=FALSE,error=FALSE,fig.keep='all'}
+ par(mfrow=c(2,2))  
+  i="Medical_History"
+    train_temp<-train_categ[,grep(i,colnames(train_categ))]
+    index<-1
+    plt<-htmltools::tagList()
+    for (i in colnames(train_temp)){
+      data_freq<-as.data.frame(table(train_temp[,i],train_clean$Response)/(as.data.frame(table(train_temp[,i]))[,2]))
+      p<-plot_ly(data_freq, x = ~Var1, y = ~Freq, color = ~Var2, type="bar")%>%
+        layout(title = paste0("Event Rate Chart- ",gsub("_"," ",i)),
+               xaxis = list(title = gsub("_"," ",i),showgrid = T))
+      plt[[index]] <- as_widget(p)
+      index <- index + 1
+    }
+    plt
+```
+<!---
+6.Medical Keyword
+```{r echo=TRUE, warning=FALSE,message=FALSE,error=FALSE,fig.keep='all'}
+i="Medical_Keyword"
+    train_temp<-train_categ[,grep(i,colnames(train_categ))]
+    index<-1
+    plt<-htmltools::tagList()
+    for (i in colnames(train_temp)){
+      data_freq<-as.data.frame(table(train_temp[,i],train_clean$Response)/(as.data.frame(table(train_temp[,i]))[,2]))
+      p<-plot_ly(data_freq, x = ~Var1, y = ~Freq, color = ~Var2, type="bar")%>%
+        layout(title = paste0("Event Rate Chart- ",gsub("_"," ",i)),
+               xaxis = list(title = gsub("_"," ",i),showgrid = T))
+      plt[[index]] <- as_widget(p)
+      index <- index + 1
+    }
+    plt
+```
+--------->
+
+#After looking at variables values, we see that columns Medical_Keyword_1 to Medical_Keyword_48 all have only zeros and ones, which may not have much predictive power, but adding them together might be significant . Below steps create new column and removes the columns from which it was created
+```{r}
+# Creating a new column as a sum of all these column : MedKeywordSum
+train_clean$MedKeywordSum <- rowSums(train_clean[,c(64:112)])
+test_clean$MedKeywordSum <- rowSums(test_clean[,c(73:121)])
+# Dropping Medical_Keyword_1 to Medical_Keyword_48 from dataset
+train_clean <- subset(train_clean, select = -c(68:112) )
+test_clean <- subset(test_clean, select = -c(73:121) )
+
+
+```
+
+```{r}
+# Creating a new column as a sum of all these column : MedHistSum
+train_clean$MedHistSum <- rowSums(train_clean[,c(28:68)])
+test_clean$MedHistSum <- rowSums(test_clean[,c(33:73)])
+# Dropping Medical_hist_1 to Medical_hist_48 from dataset
+train_clean <- subset(train_clean, select = -c(28:66) )
+test_clean <- subset(test_clean, select = -c(33:72) )
+
+```
+
+```{r}
+#these were eliminated in training data due to alot of NA rows
+test_clean<-subset(test_clean,select = -c(29:32))
+train_clean<-subset(train_clean,select = -28)
+```
+
+
+#Making a predictive model 
+
+A predictive model is built to predict response value using ** Multinomial Logistic Regression**. Below are the steps executed.
+
+Preparing “test” dataset to contain same column as “train_clean” data set to use in predictive models. 
+
+Creating a Multinomila logistic regression model to predict Response.
+```{r}
+library(caret)
+library(nnet)
+MultinomModel <- multinom(Response ~ ., data = train_clean)
+
+predict_Response <- predict (MultinomModel, test_clean , "probs")
+
+test_clean$Response <- predict (MultinomModel, test_clean)
+```
+
+#Write Submission File
+```{r}
+submission <- test_clean[, c(1,31)]
+write.csv(submission, "~/Desktop/Programming for analytics/week 6/Prudential/submission.csv", row.names = F)
+```
+
+#Summary
+Accuracy obtained from Kaggle Kappa is 0.36174 for this model. There is a lot of scope for improvement. 
+Overall we can see that age, BMI, Family history and product type as well are main factors to assess risk of the insurance.
+
